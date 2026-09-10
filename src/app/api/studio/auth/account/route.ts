@@ -8,10 +8,10 @@ export async function PUT(req: Request) {
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const body = await req.json().catch(() => ({}));
   if (typeof body.email === "string" && body.email.trim()) {
-    updateEmail(user.sub, body.email.trim().toLowerCase());
+    await updateEmail(user.sub, body.email.trim().toLowerCase());
   }
   if (typeof body.password === "string" && body.password.length >= 6) {
-    updatePassword(user.sub, body.password);
+    await updatePassword(user.sub, body.password);
   }
   return NextResponse.json({ ok: true });
 }

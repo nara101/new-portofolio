@@ -1,7 +1,7 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import bcrypt from "bcryptjs";
-import { db } from "./db";
+import { dbGet, dbRun } from "./db";
 
 const COOKIE_NAME = "studio_session";
 const ALG = "HS256";
@@ -58,22 +58,26 @@ export async function clearSessionCookie() {
   c.delete(COOKIE_NAME);
 }
 
-export function verifyPassword(email: string, password: string): { id: number; email: string } | null {
-  const row = db()
-    .prepare("SELECT id, email, password_hash FROM users WHERE email = ?")
-    .get(email) as { id: number; email: string; password_hash: string } | undefined;
+export async function verifyPassword(
+  email: string,
+  password: string
+): Promise<{ id: number; email: string } | null> {
+  const row = await dbGet<{ id: number; email: string; password_hash: string }>(
+    "SELECT id, email, password_hash FROM users WHERE email = ?",
+    [email]
+  );
   if (!row) return null;
   if (!bcrypt.compareSync(password, row.password_hash)) return null;
   return { id: row.id, email: row.email };
 }
 
-export function updatePassword(userId: number, newPassword: string): void {
+export async function updatePassword(userId: number, newPassword: string): Promise<void> {
   const hash = bcrypt.hashSync(newPassword, 10);
-  db().prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hash, userId);
+  await dbRun("UPDATE users SET password_hash = ? WHERE id = ?", [hash, userId]);
 }
 
-export function updateEmail(userId: number, newEmail: string): void {
-  db().prepare("UPDATE users SET email = ? WHERE id = ?").run(newEmail, userId);
+export async function updateEmail(userId: number, newEmail: string): Promise<void> {
+  await dbRun("UPDATE users SET email = ? WHERE id = ?", [newEmail, userId]);
 }
 
 export const SESSION_COOKIE = COOKIE_NAME;

@@ -11,8 +11,8 @@
     "check:placeholders": "node scripts/check-placeholders.mjs"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^11.10.0",
     "clsx": "2.1.1",
     "framer-motion": "^12.42.2",
     "gsap": "3.12.7",
@@ -26,7 +26,6 @@
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",
-    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "22.10.7",
     "@types/react": "19.0.7",
     "@types/react-dom": "19.0.3",

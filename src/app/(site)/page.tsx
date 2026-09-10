@@ -14,7 +14,7 @@ import { getAllContent } from "@/lib/content";
 export const dynamic = "force-dynamic";
 
 export default async function Page() {
-  const { identity, about, timeline, projects, skills, skillClusters, certificates, testimonials } = getAllContent();
+  const { identity, about, timeline, projects, skills, skillClusters, certificates, testimonials } = await getAllContent();
 
   return (
     <>

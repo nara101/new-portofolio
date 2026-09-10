@@ -1,86 +1,39 @@
-import Database from "better-sqlite3";
-import path from "node:path";
-import fs from "node:fs";
+import { createClient, type Client, type InValue } from "@libsql/client";
 import bcrypt from "bcryptjs";
 
-const DB_DIR = path.join(process.cwd(), "data");
-const DB_PATH = path.join(DB_DIR, "portfolio.db");
+let _client: Client | null = null;
 
-if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
-
-declare global {
-  var __portfolioDb: Database.Database | undefined;
-}
-
-function open(): Database.Database {
-  if (global.__portfolioDb) return global.__portfolioDb;
-  const db = new Database(DB_PATH);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  init(db);
-  migrate(db);
-  seed(db);
-  global.__portfolioDb = db;
-  return db;
-}
-
-// SQLite can't ALTER CHECK constraints, so widening the allowed values for
-// `timeline.kind` and `skills.cluster` means rebuilding the table. Runs after
-// init() (which creates the target-shape tables with CREATE IF NOT EXISTS —
-// a no-op when an old-shape table already exists) and before seed().
-function migrate(db: Database.Database) {
-  const tl = db
-    .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='timeline'`)
-    .get() as { sql: string } | undefined;
-  if (tl && !tl.sql.includes("'other'")) {
-    db.exec(`
-      CREATE TABLE timeline_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        period TEXT NOT NULL,
-        title TEXT NOT NULL,
-        detail TEXT,
-        kind TEXT NOT NULL CHECK (kind IN ('education','experience','organization','other')),
-        sort_order INTEGER NOT NULL DEFAULT 0
-      );
-      INSERT INTO timeline_new (id, period, title, detail, kind, sort_order)
-        SELECT id, period, title, detail, kind, sort_order FROM timeline;
-      DROP TABLE timeline;
-      ALTER TABLE timeline_new RENAME TO timeline;
-    `);
-    console.log("[db] Migrated timeline: added 'other' kind");
+function client(): Client {
+  if (_client) return _client;
+  const url = process.env.TURSO_DATABASE_URL;
+  if (!url) {
+    throw new Error(
+      "TURSO_DATABASE_URL is not set. Create a Turso database and set the URL in .env.local or Vercel environment variables."
+    );
   }
-
-  const sk = db
-    .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='skills'`)
-    .get() as { sql: string } | undefined;
-  if (
-    sk &&
-    (!sk.sql.includes("'mobile'") ||
-      !sk.sql.includes("'game'") ||
-      !sk.sql.includes("'ai'"))
-  ) {
-    db.exec(`
-      CREATE TABLE skills_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        cluster TEXT NOT NULL CHECK (cluster IN ('languages','ai','web','tools','mobile','game')),
-        note TEXT NOT NULL,
-        sort_order INTEGER NOT NULL DEFAULT 0
-      );
-      INSERT INTO skills_new (id, name, cluster, note, sort_order)
-        SELECT id, name,
-          CASE WHEN cluster='data' THEN 'ai' ELSE cluster END,
-          note, sort_order
-        FROM skills;
-      DROP TABLE skills;
-      ALTER TABLE skills_new RENAME TO skills;
-    `);
-    console.log("[db] Migrated skills: renamed data→ai, added mobile+game clusters");
-  }
+  _client = createClient({
+    url,
+    authToken: process.env.TURSO_AUTH_TOKEN,
+  });
+  return _client;
 }
 
-function init(db: Database.Database) {
-  db.exec(`
+let _ready: Promise<void> | null = null;
+
+async function ensureReady(): Promise<void> {
+  if (!_ready) _ready = bootstrap();
+  return _ready;
+}
+
+async function bootstrap(): Promise<void> {
+  const c = client();
+  await init(c);
+  await migrate(c);
+  await seed(c);
+}
+
+async function init(c: Client) {
+  await c.executeMultiple(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT UNIQUE NOT NULL,
@@ -188,51 +141,104 @@ function init(db: Database.Database) {
   `);
 }
 
-function seed(db: Database.Database) {
-  const userCount = db.prepare("SELECT COUNT(*) as c FROM users").get() as { c: number };
-  if (userCount.c === 0) {
+async function migrate(c: Client) {
+  const tl = await c.execute(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='timeline'"
+  );
+  if (tl.rows.length > 0 && !(tl.rows[0].sql as string).includes("'other'")) {
+    await c.executeMultiple(`
+      CREATE TABLE timeline_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        period TEXT NOT NULL,
+        title TEXT NOT NULL,
+        detail TEXT,
+        kind TEXT NOT NULL CHECK (kind IN ('education','experience','organization','other')),
+        sort_order INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO timeline_new (id, period, title, detail, kind, sort_order)
+        SELECT id, period, title, detail, kind, sort_order FROM timeline;
+      DROP TABLE timeline;
+      ALTER TABLE timeline_new RENAME TO timeline;
+    `);
+    console.log("[db] Migrated timeline: added 'other' kind");
+  }
+
+  const sk = await c.execute(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='skills'"
+  );
+  if (sk.rows.length > 0) {
+    const sql = sk.rows[0].sql as string;
+    if (!sql.includes("'mobile'") || !sql.includes("'game'") || !sql.includes("'ai'")) {
+      await c.executeMultiple(`
+        CREATE TABLE skills_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          cluster TEXT NOT NULL CHECK (cluster IN ('languages','ai','web','tools','mobile','game')),
+          note TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO skills_new (id, name, cluster, note, sort_order)
+          SELECT id, name,
+            CASE WHEN cluster='data' THEN 'ai' ELSE cluster END,
+            note, sort_order
+          FROM skills;
+        DROP TABLE skills;
+        ALTER TABLE skills_new RENAME TO skills;
+      `);
+      console.log("[db] Migrated skills: renamed data→ai, added mobile+game clusters");
+    }
+  }
+}
+
+async function seed(c: Client) {
+  const userCount = await c.execute("SELECT COUNT(*) as c FROM users");
+  if ((userCount.rows[0].c as number) === 0) {
     const email = process.env.ADMIN_EMAIL || "nabilaramadhanty11@gmail.com";
     const password = process.env.ADMIN_PASSWORD || "changeme-nara-2026";
     const hash = bcrypt.hashSync(password, 10);
-    db.prepare("INSERT INTO users (email, password_hash) VALUES (?, ?)").run(email, hash);
+    await c.execute({
+      sql: "INSERT INTO users (email, password_hash) VALUES (?, ?)",
+      args: [email, hash],
+    });
     console.log(`[db] Seeded admin user: ${email}`);
   }
 
-  const idCount = db.prepare("SELECT COUNT(*) as c FROM identity").get() as { c: number };
-  if (idCount.c === 0) {
-    db.prepare(`
-      INSERT INTO identity (id, name, role, location, email, linkedin, github, github_user, cv, portrait)
-      VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      "Nabila Ramadhanty",
-      "Web Developer",
-      "Makassar, Indonesia",
-      "nabilaramadhanty11@gmail.com",
-      "https://www.linkedin.com/in/nabilaramadhanty12/",
-      "https://github.com/nara101",
-      "nara101",
-      "/pdf/Nabila Ramadhanty (2).pdf",
-      "/images/nara2.jpg"
-    );
+  const idCount = await c.execute("SELECT COUNT(*) as c FROM identity");
+  if ((idCount.rows[0].c as number) === 0) {
+    await c.execute({
+      sql: `INSERT INTO identity (id, name, role, location, email, linkedin, github, github_user, cv, portrait)
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        "Nabila Ramadhanty",
+        "Web Developer",
+        "Makassar, Indonesia",
+        "nabilaramadhanty11@gmail.com",
+        "https://www.linkedin.com/in/nabilaramadhanty12/",
+        "https://github.com/nara101",
+        "nara101",
+        "/pdf/Nabila Ramadhanty (2).pdf",
+        "/images/nara2.jpg",
+      ],
+    });
   }
 
-  const aboutCount = db.prepare("SELECT COUNT(*) as c FROM about").get() as { c: number };
-  if (aboutCount.c === 0) {
-    db.prepare("INSERT INTO about (id, lede, body_json) VALUES (1, ?, ?)").run(
-      "A creative, hardworking person who is enthusiastic about learning new things — especially where art, science and technology meet.",
-      JSON.stringify([
-        "I have leadership experience and I'm comfortable leading a team. Reading and writing are my hobbies. I know and am still learning several programming languages, including Python and Java.",
-        "I'm currently studying Information Systems at Hasanuddin University in Makassar.",
-      ])
-    );
+  const aboutCount = await c.execute("SELECT COUNT(*) as c FROM about");
+  if ((aboutCount.rows[0].c as number) === 0) {
+    await c.execute({
+      sql: "INSERT INTO about (id, lede, body_json) VALUES (1, ?, ?)",
+      args: [
+        "A creative, hardworking person who is enthusiastic about learning new things — especially where art, science and technology meet.",
+        JSON.stringify([
+          "I have leadership experience and I'm comfortable leading a team. Reading and writing are my hobbies. I know and am still learning several programming languages, including Python and Java.",
+          "I'm currently studying Information Systems at Hasanuddin University in Makassar.",
+        ]),
+      ],
+    });
   }
 
-  const tlCount = db.prepare("SELECT COUNT(*) as c FROM timeline").get() as { c: number };
-  if (tlCount.c === 0) {
-    const insert = db.prepare(
-      "INSERT INTO timeline (period, title, detail, kind, sort_order) VALUES (?, ?, ?, ?, ?)"
-    );
-    const rows = [
+  const tlCount = await c.execute("SELECT COUNT(*) as c FROM timeline");
+  if ((tlCount.rows[0].c as number) === 0) {
+    const rows: Array<[string, string, string | null, string]> = [
       ["2008 — 2014", "SD Inpres Toddopuli I Makassar", null, "education"],
       ["2014 — 2017", "SMPN 33 Makassar", null, "education"],
       ["2017 — 2020", "SMAN 3 Makassar", null, "education"],
@@ -243,14 +249,16 @@ function seed(db: Database.Database) {
       ["Jun 2024 — Jul 2024", "Data Science Mentor", "Summer Club, Generation Girls", "experience"],
       ["Oct 2024", "Associate Data Scientist", "VSGA Digitalent", "experience"],
     ];
-    rows.forEach((r, i) => insert.run(r[0], r[1], r[2], r[3], i));
+    await c.batch(
+      rows.map((r, i) => ({
+        sql: "INSERT INTO timeline (period, title, detail, kind, sort_order) VALUES (?, ?, ?, ?, ?)",
+        args: [r[0], r[1], r[2], r[3], i],
+      }))
+    );
   }
 
-  const certCount = db.prepare("SELECT COUNT(*) as c FROM certificates").get() as { c: number };
-  if (certCount.c === 0) {
-    const insert = db.prepare(
-      "INSERT INTO certificates (title, issuer, file, year, sort_order) VALUES (?, ?, ?, ?, ?)"
-    );
+  const certCount = await c.execute("SELECT COUNT(*) as c FROM certificates");
+  if ((certCount.rows[0].c as number) === 0) {
     const rows: Array<[string, string, string, string | null]> = [
       ["Google Cybersecurity", "Google", "/pdf/G_cybersecurity.pdf", null],
       ["Google Data Analytics", "Google", "/pdf/G_dataanalytics.pdf", null],
@@ -262,15 +270,16 @@ function seed(db: Database.Database) {
       ["Leading People and Teams", "University of Michigan", "/pdf/Leading People and Teams full.pdf", null],
       ["Hackathon S8 2023", "Dispora Makassar × Binar", "/pdf/Hackathon S8 2023_Cert_Nabila Ramadhanty.pdf", "2023"],
     ];
-    rows.forEach((r, i) => insert.run(r[0], r[1], r[2], r[3], i));
+    await c.batch(
+      rows.map((r, i) => ({
+        sql: "INSERT INTO certificates (title, issuer, file, year, sort_order) VALUES (?, ?, ?, ?, ?)",
+        args: [r[0], r[1], r[2], r[3], i],
+      }))
+    );
   }
 
-  const projCount = db.prepare("SELECT COUNT(*) as c FROM projects").get() as { c: number };
-  if (projCount.c === 0) {
-    const insert = db.prepare(`
-      INSERT INTO projects (slug, name, tagline, description, live_url, repo_url, stack_json, sort_order)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+  const projCount = await c.execute("SELECT COUNT(*) as c FROM projects");
+  if ((projCount.rows[0].c as number) === 0) {
     const rows = [
       {
         slug: "movie-web",
@@ -313,36 +322,38 @@ function seed(db: Database.Database) {
         stack: ["Bootstrap", "HTML", "CSS", "JavaScript"],
       },
     ];
-    rows.forEach((p, i) =>
-      insert.run(p.slug, p.name, p.tagline, p.description, p.liveUrl, p.repoUrl, JSON.stringify(p.stack), i)
+    await c.batch(
+      rows.map((p, i) => ({
+        sql: `INSERT INTO projects (slug, name, tagline, description, live_url, repo_url, stack_json, sort_order)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [p.slug, p.name, p.tagline, p.description, p.liveUrl, p.repoUrl, JSON.stringify(p.stack), i],
+      }))
     );
   }
 
-  const themeCount = db.prepare("SELECT COUNT(*) as c FROM theme").get() as { c: number };
-  if (themeCount.c === 0) {
-    db.prepare(`
-      INSERT INTO theme (id, color_bg, color_text, color_text_muted, color_accent, color_accent_soft, color_accent_nature, color_accent_sky, color_ink_dark, font_display, font_body, font_mono)
-      VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      "#FFF7E6", // bg (Vanilla Cream)
-      "#2D3A47", // text (Midnight Lagoon)
-      "#4A5B6D", // text muted
-      "#B46A72", // accent (Rosewood)
-      "#F7C8D3", // accent soft (Blush Petal)
-      "#A8B58A", // accent nature (Sage Leaf)
-      "#A9B7C6", // accent sky (Misty Sky)
-      "#141B22", // ink dark
-      "Plus Jakarta Sans",
-      "Inter",
-      "JetBrains Mono"
-    );
+  const themeCount = await c.execute("SELECT COUNT(*) as c FROM theme");
+  if ((themeCount.rows[0].c as number) === 0) {
+    await c.execute({
+      sql: `INSERT INTO theme (id, color_bg, color_text, color_text_muted, color_accent, color_accent_soft, color_accent_nature, color_accent_sky, color_ink_dark, font_display, font_body, font_mono)
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        "#FFF7E6",
+        "#2D3A47",
+        "#4A5B6D",
+        "#B46A72",
+        "#F7C8D3",
+        "#A8B58A",
+        "#A9B7C6",
+        "#141B22",
+        "Plus Jakarta Sans",
+        "Inter",
+        "JetBrains Mono",
+      ],
+    });
   }
 
-  const skillCount = db.prepare("SELECT COUNT(*) as c FROM skills").get() as { c: number };
-  if (skillCount.c === 0) {
-    const insert = db.prepare(
-      "INSERT INTO skills (name, cluster, note, sort_order) VALUES (?, ?, ?, ?)"
-    );
+  const skillCount = await c.execute("SELECT COUNT(*) as c FROM skills");
+  if ((skillCount.rows[0].c as number) === 0) {
     const rows: Array<[string, string, string]> = [
       ["Python", "languages", "Primary language for data and ML coursework."],
       ["Java", "languages", "Studied as part of the Information Systems curriculum."],
@@ -357,12 +368,14 @@ function seed(db: Database.Database) {
       ["Git & GitHub", "tools", "All projects are published from GitHub Pages."],
       ["Cybersecurity", "tools", "Google Cybersecurity certificate."],
     ];
-    rows.forEach((r, i) => insert.run(r[0], r[1], r[2], i));
+    await c.batch(
+      rows.map((r, i) => ({
+        sql: "INSERT INTO skills (name, cluster, note, sort_order) VALUES (?, ?, ?, ?)",
+        args: [r[0], r[1], r[2], i],
+      }))
+    );
   }
 
-  // Seed the 6 cluster metadata rows (labels shown in the constellation legend,
-  // plus a visibility toggle per cluster). Rows are ADDED per-cluster if
-  // missing so upgrades from an earlier 4-cluster DB pick up mobile+game.
   const clusters: Array<[string, string, number]> = [
     ["languages", "Languages", 0],
     ["ai", "AI & ML", 1],
@@ -371,10 +384,52 @@ function seed(db: Database.Database) {
     ["mobile", "Mobile", 4],
     ["game", "Game", 5],
   ];
-  const insertCluster = db.prepare(
-    "INSERT OR IGNORE INTO skill_clusters (id, label, visible, sort_order) VALUES (?, ?, 1, ?)"
+  await c.batch(
+    clusters.map(([id, label, order]) => ({
+      sql: "INSERT OR IGNORE INTO skill_clusters (id, label, visible, sort_order) VALUES (?, ?, 1, ?)",
+      args: [id, label, order],
+    }))
   );
-  for (const [id, label, order] of clusters) insertCluster.run(id, label, order);
 }
 
-export const db = open;
+// ── Public helpers ──────────────────────────────────────────────────
+
+export async function dbGet<T = Record<string, unknown>>(
+  sql: string,
+  args: InValue[] = []
+): Promise<T | undefined> {
+  await ensureReady();
+  const result = await client().execute({ sql, args });
+  return result.rows[0] as T | undefined;
+}
+
+export async function dbAll<T = Record<string, unknown>>(
+  sql: string,
+  args: InValue[] = []
+): Promise<T[]> {
+  await ensureReady();
+  const result = await client().execute({ sql, args });
+  return result.rows as unknown as T[];
+}
+
+export async function dbRun(
+  sql: string,
+  args: InValue[] = []
+): Promise<{ changes: number; lastInsertRowid: bigint | undefined }> {
+  await ensureReady();
+  const result = await client().execute({ sql, args });
+  return {
+    changes: result.rowsAffected,
+    lastInsertRowid: result.lastInsertRowid ?? undefined,
+  };
+}
+
+export async function dbBatch(
+  stmts: Array<{ sql: string; args?: InValue[] }>
+): Promise<void> {
+  await ensureReady();
+  await client().batch(
+    stmts.map((s) => ({ sql: s.sql, args: s.args ?? [] })),
+    "deferred"
+  );
+}

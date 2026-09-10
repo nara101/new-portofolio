@@ -1,22 +1,20 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { dbRun } from "@/lib/db";
 import { getIdentity } from "@/lib/content";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  return NextResponse.json(getIdentity());
+  return NextResponse.json(await getIdentity());
 }
 
 export async function PUT(req: Request) {
   const b = await req.json();
-  db()
-    .prepare(
-      `UPDATE identity
-         SET name=?, role=?, location=?, email=?, linkedin=?, github=?, github_user=?, cv=?, portrait=?
-       WHERE id=1`
-    )
-    .run(
+  await dbRun(
+    `UPDATE identity
+       SET name=?, role=?, location=?, email=?, linkedin=?, github=?, github_user=?, cv=?, portrait=?
+     WHERE id=1`,
+    [
       String(b.name || ""),
       String(b.role || ""),
       String(b.location || ""),
@@ -25,7 +23,8 @@ export async function PUT(req: Request) {
       String(b.github || ""),
       String(b.githubUser || ""),
       String(b.cv || ""),
-      String(b.portrait || "")
-    );
-  return NextResponse.json(getIdentity());
+      String(b.portrait || ""),
+    ]
+  );
+  return NextResponse.json(await getIdentity());
 }

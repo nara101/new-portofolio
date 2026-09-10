@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { dbAll, dbGet, dbRun } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -10,13 +10,11 @@ function toStack(v: unknown): string[] {
 }
 
 export async function GET() {
-  const rows = db()
-    .prepare(
-      `SELECT id, slug, name, tagline, description, live_url, repo_url, stack_json,
-              screenshot, challenge, solution, sort_order
-         FROM projects ORDER BY sort_order, id`
-    )
-    .all() as any[];
+  const rows = await dbAll<Record<string, unknown>>(
+    `SELECT id, slug, name, tagline, description, live_url, repo_url, stack_json,
+            screenshot, challenge, solution, sort_order
+       FROM projects ORDER BY sort_order, id`
+  );
   return NextResponse.json(
     rows.map((r) => ({
       id: r.id,
@@ -26,7 +24,7 @@ export async function GET() {
       description: r.description,
       liveUrl: r.live_url,
       repoUrl: r.repo_url,
-      stack: JSON.parse(r.stack_json),
+      stack: JSON.parse(r.stack_json as string),
       screenshot: r.screenshot,
       challenge: r.challenge,
       solution: r.solution,
@@ -37,14 +35,14 @@ export async function GET() {
 
 export async function POST(req: Request) {
   const b = await req.json();
-  const max = (db().prepare("SELECT COALESCE(MAX(sort_order), -1) as m FROM projects").get() as { m: number }).m;
-  const info = db()
-    .prepare(
-      `INSERT INTO projects (slug, name, tagline, description, live_url, repo_url, stack_json,
-                             screenshot, challenge, solution, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
+  const max = await dbGet<{ m: number }>(
+    "SELECT COALESCE(MAX(sort_order), -1) as m FROM projects"
+  );
+  const info = await dbRun(
+    `INSERT INTO projects (slug, name, tagline, description, live_url, repo_url, stack_json,
+                           screenshot, challenge, solution, sort_order)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
       String(b.slug || `project-${Date.now()}`),
       String(b.name || ""),
       String(b.tagline || ""),
@@ -55,21 +53,20 @@ export async function POST(req: Request) {
       b.screenshot ? String(b.screenshot) : null,
       b.challenge ? String(b.challenge) : null,
       b.solution ? String(b.solution) : null,
-      max + 1
-    );
-  return NextResponse.json({ id: info.lastInsertRowid });
+      (max?.m ?? -1) + 1,
+    ]
+  );
+  return NextResponse.json({ id: Number(info.lastInsertRowid) });
 }
 
 export async function PUT(req: Request) {
   const b = await req.json();
   if (!b.id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  db()
-    .prepare(
-      `UPDATE projects SET slug=?, name=?, tagline=?, description=?, live_url=?, repo_url=?,
-                          stack_json=?, screenshot=?, challenge=?, solution=?, sort_order=?
-        WHERE id=?`
-    )
-    .run(
+  await dbRun(
+    `UPDATE projects SET slug=?, name=?, tagline=?, description=?, live_url=?, repo_url=?,
+                        stack_json=?, screenshot=?, challenge=?, solution=?, sort_order=?
+      WHERE id=?`,
+    [
       String(b.slug || ""),
       String(b.name || ""),
       String(b.tagline || ""),
@@ -81,8 +78,9 @@ export async function PUT(req: Request) {
       b.challenge ? String(b.challenge) : null,
       b.solution ? String(b.solution) : null,
       Number(b.sort_order ?? 0),
-      Number(b.id)
-    );
+      Number(b.id),
+    ]
+  );
   return NextResponse.json({ ok: true });
 }
 
@@ -90,6 +88,6 @@ export async function DELETE(req: Request) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  db().prepare("DELETE FROM projects WHERE id=?").run(Number(id));
+  await dbRun("DELETE FROM projects WHERE id=?", [Number(id)]);
   return NextResponse.json({ ok: true });
 }

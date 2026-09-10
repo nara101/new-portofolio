@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { dbAll, dbGet, dbRun } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -10,46 +10,44 @@ function kind(v: unknown): string {
 
 export async function GET() {
   return NextResponse.json(
-    db()
-      .prepare(
-        "SELECT id, period, title, detail, kind, sort_order FROM timeline ORDER BY sort_order, id"
-      )
-      .all()
+    await dbAll(
+      "SELECT id, period, title, detail, kind, sort_order FROM timeline ORDER BY sort_order, id"
+    )
   );
 }
 
 export async function POST(req: Request) {
   const b = await req.json();
-  const max = (db().prepare("SELECT COALESCE(MAX(sort_order), -1) as m FROM timeline").get() as { m: number }).m;
-  const info = db()
-    .prepare(
-      "INSERT INTO timeline (period, title, detail, kind, sort_order) VALUES (?, ?, ?, ?, ?)"
-    )
-    .run(
+  const max = await dbGet<{ m: number }>(
+    "SELECT COALESCE(MAX(sort_order), -1) as m FROM timeline"
+  );
+  const info = await dbRun(
+    "INSERT INTO timeline (period, title, detail, kind, sort_order) VALUES (?, ?, ?, ?, ?)",
+    [
       String(b.period || ""),
       String(b.title || ""),
       b.detail ? String(b.detail) : null,
       kind(b.kind),
-      max + 1
-    );
-  return NextResponse.json({ id: info.lastInsertRowid });
+      (max?.m ?? -1) + 1,
+    ]
+  );
+  return NextResponse.json({ id: Number(info.lastInsertRowid) });
 }
 
 export async function PUT(req: Request) {
   const b = await req.json();
   if (!b.id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  db()
-    .prepare(
-      "UPDATE timeline SET period=?, title=?, detail=?, kind=?, sort_order=? WHERE id=?"
-    )
-    .run(
+  await dbRun(
+    "UPDATE timeline SET period=?, title=?, detail=?, kind=?, sort_order=? WHERE id=?",
+    [
       String(b.period || ""),
       String(b.title || ""),
       b.detail ? String(b.detail) : null,
       kind(b.kind),
       Number(b.sort_order ?? 0),
-      Number(b.id)
-    );
+      Number(b.id),
+    ]
+  );
   return NextResponse.json({ ok: true });
 }
 
@@ -57,6 +55,6 @@ export async function DELETE(req: Request) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  db().prepare("DELETE FROM timeline WHERE id=?").run(Number(id));
+  await dbRun("DELETE FROM timeline WHERE id=?", [Number(id)]);
   return NextResponse.json({ ok: true });
 }

@@ -11,8 +11,8 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-export default function StudioLayout({ children }: { children: React.ReactNode }) {
-  const theme = getTheme();
+export default async function StudioLayout({ children }: { children: React.ReactNode }) {
+  const theme = await getTheme();
   return (
     <>
       <link rel="preconnect" href="https://fonts.googleapis.com" />

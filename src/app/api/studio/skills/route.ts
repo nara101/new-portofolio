@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { dbAll, dbGet, dbRun } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -10,29 +10,31 @@ function cluster(v: unknown): string {
 
 export async function GET() {
   return NextResponse.json(
-    db()
-      .prepare(
-        "SELECT id, name, cluster, note, sort_order FROM skills ORDER BY sort_order, id"
-      )
-      .all()
+    await dbAll(
+      "SELECT id, name, cluster, note, sort_order FROM skills ORDER BY sort_order, id"
+    )
   );
 }
 
 export async function POST(req: Request) {
   const b = await req.json();
-  const max = (db().prepare("SELECT COALESCE(MAX(sort_order), -1) as m FROM skills").get() as { m: number }).m;
-  const info = db()
-    .prepare("INSERT INTO skills (name, cluster, note, sort_order) VALUES (?, ?, ?, ?)")
-    .run(String(b.name || ""), cluster(b.cluster), String(b.note || ""), max + 1);
-  return NextResponse.json({ id: info.lastInsertRowid });
+  const max = await dbGet<{ m: number }>(
+    "SELECT COALESCE(MAX(sort_order), -1) as m FROM skills"
+  );
+  const info = await dbRun(
+    "INSERT INTO skills (name, cluster, note, sort_order) VALUES (?, ?, ?, ?)",
+    [String(b.name || ""), cluster(b.cluster), String(b.note || ""), (max?.m ?? -1) + 1]
+  );
+  return NextResponse.json({ id: Number(info.lastInsertRowid) });
 }
 
 export async function PUT(req: Request) {
   const b = await req.json();
   if (!b.id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  db()
-    .prepare("UPDATE skills SET name=?, cluster=?, note=?, sort_order=? WHERE id=?")
-    .run(String(b.name || ""), cluster(b.cluster), String(b.note || ""), Number(b.sort_order ?? 0), Number(b.id));
+  await dbRun(
+    "UPDATE skills SET name=?, cluster=?, note=?, sort_order=? WHERE id=?",
+    [String(b.name || ""), cluster(b.cluster), String(b.note || ""), Number(b.sort_order ?? 0), Number(b.id)]
+  );
   return NextResponse.json({ ok: true });
 }
 
@@ -40,6 +42,6 @@ export async function DELETE(req: Request) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  db().prepare("DELETE FROM skills WHERE id=?").run(Number(id));
+  await dbRun("DELETE FROM skills WHERE id=?", [Number(id)]);
   return NextResponse.json({ ok: true });
 }
