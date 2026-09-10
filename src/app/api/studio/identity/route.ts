@@ -1,0 +1,31 @@
+import { NextResponse } from "next/server";
+import { db } from "@/lib/db";
+import { getIdentity } from "@/lib/content";
+
+export const runtime = "nodejs";
+
+export async function GET() {
+  return NextResponse.json(getIdentity());
+}
+
+export async function PUT(req: Request) {
+  const b = await req.json();
+  db()
+    .prepare(
+      `UPDATE identity
+         SET name=?, role=?, location=?, email=?, linkedin=?, github=?, github_user=?, cv=?, portrait=?
+       WHERE id=1`
+    )
+    .run(
+      String(b.name || ""),
+      String(b.role || ""),
+      String(b.location || ""),
+      String(b.email || ""),
+      String(b.linkedin || ""),
+      String(b.github || ""),
+      String(b.githubUser || ""),
+      String(b.cv || ""),
+      String(b.portrait || "")
+    );
+  return NextResponse.json(getIdentity());
+}

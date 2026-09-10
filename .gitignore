@@ -1,0 +1,19 @@
+node_modules/
+.next/
+out/
+build/
+.DS_Store
+*.pem
+.env*
+!.env.example
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+next-env.d.ts
+.vercel
+.turbo
+tsconfig.tsbuildinfo
+
+# SQLite database — contains all editable portfolio content and the admin
+# password hash. Keep local; don't commit.
+data/
