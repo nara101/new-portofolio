@@ -28,10 +28,17 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: `extension ${fileExt} not allowed` }, { status: 400 });
   }
 
-  const response = await utapi.uploadFiles(file);
-  if (response.error) {
-    return NextResponse.json({ error: response.error.message }, { status: 500 });
-  }
+  try {
+    const response = await utapi.uploadFiles(file);
+    if (response.error) {
+      console.error("[upload] Uploadthing error:", response.error);
+      return NextResponse.json({ error: response.error.message }, { status: 500 });
+    }
 
-  return NextResponse.json({ url: response.data.ufsUrl });
+    const url = (response.data as any).ufsUrl ?? (response.data as any).url;
+    return NextResponse.json({ url });
+  } catch (e: any) {
+    console.error("[upload] Exception:", e);
+    return NextResponse.json({ error: e.message || "upload failed" }, { status: 500 });
+  }
 }
