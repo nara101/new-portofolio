@@ -26,10 +26,15 @@ async function ensureReady(): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
-  const c = client();
-  await init(c);
-  await migrate(c);
-  await seed(c);
+  try {
+    const c = client();
+    await init(c);
+    await migrate(c);
+    await seed(c);
+  } catch (e) {
+    _ready = null;
+    throw e;
+  }
 }
 
 async function init(c: Client) {
@@ -197,7 +202,7 @@ async function seed(c: Client) {
     const password = process.env.ADMIN_PASSWORD || "changeme-nara-2026";
     const hash = bcrypt.hashSync(password, 10);
     await c.execute({
-      sql: "INSERT INTO users (email, password_hash) VALUES (?, ?)",
+      sql: "INSERT OR IGNORE INTO users (email, password_hash) VALUES (?, ?)",
       args: [email, hash],
     });
     console.log(`[db] Seeded admin user: ${email}`);
@@ -392,6 +397,13 @@ async function seed(c: Client) {
   );
 }
 
+// Turso Row objects carry prototype methods that Next.js cannot
+// serialize when passing from Server → Client Components. Spread
+// each row into a plain object so serialization succeeds.
+function plain<T>(row: Record<string, unknown>): T {
+  return { ...row } as T;
+}
+
 // ── Public helpers ──────────────────────────────────────────────────
 
 export async function dbGet<T = Record<string, unknown>>(
@@ -400,7 +412,8 @@ export async function dbGet<T = Record<string, unknown>>(
 ): Promise<T | undefined> {
   await ensureReady();
   const result = await client().execute({ sql, args });
-  return result.rows[0] as T | undefined;
+  const row = result.rows[0];
+  return row ? plain<T>(row as Record<string, unknown>) : undefined;
 }
 
 export async function dbAll<T = Record<string, unknown>>(
@@ -409,7 +422,7 @@ export async function dbAll<T = Record<string, unknown>>(
 ): Promise<T[]> {
   await ensureReady();
   const result = await client().execute({ sql, args });
-  return result.rows as unknown as T[];
+  return result.rows.map((r) => plain<T>(r as Record<string, unknown>));
 }
 
 export async function dbRun(
