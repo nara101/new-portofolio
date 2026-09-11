@@ -3,7 +3,11 @@ import { UTApi } from "uploadthing/server";
 
 export const runtime = "nodejs";
 
-const utapi = new UTApi();
+let _utapi: UTApi | null = null;
+function getUtapi() {
+  if (!_utapi) _utapi = new UTApi();
+  return _utapi;
+}
 
 const ALLOWED: Record<string, string[]> = {
   image: [".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"],
@@ -29,7 +33,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const response = await utapi.uploadFiles(file);
+    const response = await getUtapi().uploadFiles(file);
     if (response.error) {
       console.error("[upload] Uploadthing error:", response.error);
       return NextResponse.json({ error: response.error.message }, { status: 500 });
